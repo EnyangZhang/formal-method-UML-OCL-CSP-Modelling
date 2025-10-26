@@ -1,0 +1,331 @@
+
+model Library
+
+enum BookStatus {available, booked, borrowed}
+
+-- classes
+class Person
+attributes 
+  name : String
+end
+
+class Member < Person
+attributes 
+  id : MemberId
+  borrowLimit : Integer
+operations
+  borrow(t : BookTitle) : BookCopy
+  book(t : BookTitle) : BookCopy
+  pickup(c : BookCopy)
+  return(c : BookCopy)
+  cancelBooking(t : BookTitle)
+  newId(n : Integer): MemberId
+end
+
+class MemberId
+attributes 
+  number : Integer
+end
+
+class AdminId
+attributes 
+  number : Integer
+end
+
+class CopyCode
+attributes 
+  number : Integer
+end
+
+class Isbn
+attributes 
+  number : String
+end
+
+class Admin < Person
+attributes 
+  id : AdminId
+operations
+  newId(n : Integer): AdminId
+
+end
+
+class BookTitle
+attributes
+  bookName : String
+  waiting : Sequence(Member)
+  isbn : Isbn
+operations 
+  wait(m : Member)
+  delWait(m : Member)
+  addCopy(copyCode : Integer) : BookCopy
+  removeCopy(c : BookCopy)
+  newId(n : Integer): Isbn
+
+end
+
+
+class BookCopy
+attributes
+  code : CopyCode
+  status : BookStatus
+operations
+  newId(n : Integer): CopyCode
+end
+
+
+-- associations
+association MemberIdTable between
+  Member[1]   role holder
+  MemberId[1] role id
+end
+
+association AdminIdTable between
+  Admin[1]   role holder
+  AdminId[1] role id
+end
+
+association CopyIdTable between
+  BookCopy[1] role copy
+  CopyCode[1] role code
+end
+
+association CopiesOf between 
+  BookTitle[1] role titleOf
+  BookCopy[*] role copies
+end
+
+association IsbnTable between 
+  BookTitle[1] role bookTitle
+  Isbn[1] role assigned
+end
+
+associationclass Loan between 
+  Member[1] role borrowedBy
+  BookCopy[*] role borrow
+--
+attributes
+  startDate : Integer
+  dueDate : Integer
+  active : Boolean
+end
+
+association WaitingFor between 
+  Member[*] role waitList
+  BookTitle[*] role waitingFor
+end
+
+
+-- OCL constraints
+
+constraints
+
+context m : Member inv HasMemberIdAttr:
+  not m.id.oclIsUndefined()
+
+context a : Admin inv HasAdminIdAttr:
+  not a.id.oclIsUndefined()
+
+context c : BookCopy inv HasCopyCodeAttr:
+  not c.code.oclIsUndefined()
+
+context t : BookTitle inv HasIsbnAttr:
+  not t.isbn.oclIsUndefined()
+
+
+context x : MemberId inv UniqueMemberNumber:
+  MemberId.allInstances()->isUnique(i | i.number)
+
+context x : AdminId inv UniqueAdminNumber:
+  AdminId.allInstances()->isUnique(i | i.number)
+
+context x : CopyCode inv UniqueCopyNumber:
+  CopyCode.allInstances()->isUnique(i | i.number)
+
+context x : Isbn inv UniqueIsbnString:
+  Isbn.allInstances()->isUnique(i | i.number)
+
+
+
+
+
+context mid : MemberId inv MemberIdLinksExactlyOneMemberAndMatchesAttr:
+  not mid.holder.oclIsUndefined() and mid.holder.id = mid
+
+context aid : AdminId inv AdminIdLinksExactlyOneAdminAndMatchesAttr:
+  not aid.holder.oclIsUndefined() and aid.holder.id = aid
+
+context cc : CopyCode inv CopyCodeLinksExactlyOneCopyAndMatchesAttr:
+  not cc.copy.oclIsUndefined() and cc.copy.code = cc
+
+context ib : Isbn inv IsbnLinksExactlyOneTitleAndMatchesAttr:
+  not ib.bookTitle.oclIsUndefined() and ib.bookTitle.isbn = ib
+
+
+context c : BookCopy inv CopyStatusLoanConsistency:
+  (c.status = #available implies
+     Loan.allInstances()->forAll(l | l.borrow <> c or l.active = false))
+and
+  (c.status = #borrowed implies
+     Loan.allInstances()->select(l | l.borrow = c and l.active = true)->size() = 1)
+and
+  (c.status = #booked implies
+     Loan.allInstances()->forAll(l | l.borrow <> c or l.active = false))
+
+
+
+
+context c : BookCopy inv AtMostOneActiveLoan:
+  Loan.allInstances()->select(l | l.borrow = c and l.active = true)->size() <= 1
+
+
+
+
+context m : Member inv BorrowLimitRespected:
+  Loan.allInstances()->select(l | l.borrowedBy = m and l.active = true)->size()
+    <= m.borrowLimit
+
+context m : Member inv NoTwoCopiesSameTitle:
+  let L = Loan.allInstances()->select(l | l.borrowedBy = m and l.active = true) in
+    L.borrow.titleOf->asSet()->size() = L->size()
+
+
+
+context t : BookTitle inv WaitingNoDuplicates:
+  t.waiting->asSet()->size() = t.waiting->size()
+
+context t : BookTitle inv WaitingLinkConsistency:
+  t.waiting->asSet() = t.waitList->asSet()
+
+context t : BookTitle inv NoQueueWhenAvailable:
+  t.copies->exists(c | c.status = #available) implies t.waiting->isEmpty()
+
+context t : BookTitle inv QueueImpliesFull:
+  t.waiting->notEmpty() implies t.copies->forAll(c | c.status <> #available)
+
+
+
+
+
+context t : BookTitle inv NonEmptyHoldings:
+  t.copies->size() >= 1
+
+
+
+
+
+-- Member
+context Member::borrow(t : BookTitle) : BookCopy
+pre NotInQueue   : t.waiting->asSet()->excludes(self)
+pre HasAvailable : t.copies->exists(c | c.status = #available)
+pre UnderLimit   : Loan.allInstances()->select(l | l.borrowedBy = self and l.active = true)->size()
+                    < self.borrowLimit
+pre NotHoldingSameTitle :
+  Loan.allInstances()->forAll(l | l.borrowedBy <> self or l.active = false or l.borrow.titleOf <> t)
+post GotOne:
+  result.titleOf = t and result.status = #borrowed and
+  Loan.allInstances()->exists(l |
+    l.borrowedBy = self and l.borrow = result and l.active = true)
+
+context Member::book(t : BookTitle) : BookCopy
+pre NoAvailable  : t.copies->forAll(c | c.status <> #available)
+pre NotInQueue   : t.waiting->asSet()->excludes(self)
+post BookedOne   : result.titleOf = t and result.status = #booked
+
+context Member::pickup(c : BookCopy)
+pre IsBooked      : c.status = #booked
+pre SameTitleNotHeld :
+  Loan.allInstances()->forAll(l | l.borrowedBy <> self or l.active = false or l.borrow.titleOf <> c.titleOf)
+pre UnderLimit    :
+  Loan.allInstances()->select(l | l.borrowedBy = self and l.active = true)->size() < self.borrowLimit
+post NowBorrowed  :
+  c.status = #borrowed and
+  Loan.allInstances()->exists(l | l.borrowedBy = self and l.borrow = c and l.active = true)
+
+context Member::return(c : BookCopy)
+pre HasActiveLoan :
+  Loan.allInstances()->exists(l | l.borrow = c and l.borrowedBy = self and l.active = true)
+
+post CloseLoan :
+  Loan.allInstances()->exists(l |
+    l.borrow = c and l.borrowedBy = self and l.active@pre = true and l.active = false)
+
+post IfQueueThenBookHead :
+  c.titleOf.waiting@pre->notEmpty() implies
+    (c.status = #booked and
+     c.titleOf.waiting = c.titleOf.waiting@pre->excluding(c.titleOf.waiting@pre->first()))
+
+post IfNoQueueThenAvailable :
+  c.titleOf.waiting@pre->isEmpty() implies c.status = #available
+
+context Member::cancelBooking(t : BookTitle)
+pre HasBookedThisTitle :
+  t.copies->exists(c | c.status = #booked)
+post OneBookedReleased :
+  t.copies@pre->exists(c | c.status@pre = #booked) and
+  t.copies->exists(c | c.status = #available)
+
+-- BookTitle
+context BookTitle::wait(m : Member)
+pre NoAvailable   : self.copies->forAll(c | c.status <> #available)
+pre NotHolding    : Loan.allInstances()->forAll(l |
+                      l.borrowedBy <> m or l.active = false or l.borrow.titleOf <> self)
+pre NotAlreadyInQ : self.waiting->asSet()->excludes(m)
+post Appended     :
+  self.waiting = self.waiting@pre->append(m) and
+  m.waitingFor = m.waitingFor@pre->including(self)
+
+context BookTitle::delWait(m : Member)
+pre IsInQueue : self.waiting->asSet()->includes(m)
+post Removed  :
+  self.waiting = self.waiting@pre->excluding(m) and
+  m.waitingFor = m.waitingFor@pre->excluding(self)
+
+context BookTitle::addCopy(copyCode : Integer) : BookCopy
+pre CodeFresh   : CopyCode.allInstances()->forAll(x | x.number <> copyCode)
+post NewCopy    : result.oclIsNew() and
+                  result.status = #available and
+                  result.titleOf = self and
+                  self.copies = self.copies@pre->including(result)
+-- 绑定 CopyCode(number=copyCode) 请在 .cmd 里创建 CopyCode 对象并赋给 result.code
+
+context BookTitle::removeCopy(c : BookCopy)
+pre BelongsHere  : c.titleOf = self
+pre NoActiveLoan : Loan.allInstances()->forAll(l | l.borrow <> c or l.active = false)
+post Detached    : self.copies = self.copies@pre->excluding(c)
+
+-- MemberId / AdminId / CopyCode / Isbn 的 newId 系列
+context Member::newId(n : Integer) : MemberId
+pre GE100    : n >= 100
+pre FreshNum : MemberId.allInstances()->forAll(x | x.number <> n)
+post NewId   : result.oclIsNew()
+post Number  : result.number = n
+post Linked  : self.id = result
+
+context Admin::newId(n : Integer) : AdminId
+pre GE100    : n >= 100
+pre FreshNum : AdminId.allInstances()->forAll(x | x.number <> n)
+post NewId   : result.oclIsNew()
+post Number  : result.number = n
+post Linked  : self.id = result
+
+context BookCopy::newId(n : Integer) : CopyCode
+pre GE100    : n >= 100
+pre FreshNum : CopyCode.allInstances()->forAll(x | x.number <> n)
+post NewId   : result.oclIsNew()
+post Number  : result.number = n
+post Linked  : self.code = result
+
+-- 你当前签名：Integer -> Isbn.number 是 String，会冲突。
+-- 维持签名不改：不去赋值 number，只建立链接，避免类型错误。
+context BookTitle::newId(n : Integer) : Isbn
+pre GE100  : n >= 100
+post NewId : result.oclIsNew()
+post Link  : self.isbn = result
+
+
+
+
+
+
+
