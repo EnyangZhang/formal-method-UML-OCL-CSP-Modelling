@@ -1,0 +1,62 @@
+-- =========================================
+-- Library System — CSP (A2 style, ProB-ready)
+-- 参考课堂示例：分进程 + 并行同步 + Trace 测试
+-- =========================================
+
+-- 用枚举，便于在 Trace 里写常量（比 Int 直观）
+datatype MEM = m1 | m2 | m3
+datatype TIT = b1 | b2
+
+-- 事件与 B 操作同名，便于同步
+channel registerMember : MEM
+channel addTitle       : TIT
+channel incInventory   : TIT.Int
+channel borrow         : MEM.TIT
+channel return         : MEM.TIT
+channel addWaiting     : MEM.TIT
+channel removeWaiting  : MEM.TIT
+channel notify         : MEM.TIT
+
+-- 馆员：负责上新/补货
+LIBRARIAN =
+      addTitle?t      -> LIBRARIAN
+   [] incInventory?t?n -> LIBRARIAN
+
+-- 会员行为：借不到就排队；被通知后再借；借到后归还
+USER(m, t) =
+      borrow!m!t -> return!m!t -> USER(m, t)
+   [] addWaiting!m!t ->
+        (  notify?m?t      -> borrow!m!t -> return!m!t -> USER(m, t)
+        [] removeWaiting!m!t -> USER(m, t)
+        )
+
+-- 多会员并发（例：都盯 b1；需要多书目时可把 t 外部选择化）
+USERS = ||| x:{m1,m2} @ USER(x, b1)
+
+-- 与 B 同步的操作集合（只为并行书写清晰；不是显式 α）
+Ops = {| registerMember, addTitle, incInventory,
+         borrow, return, addWaiting, removeWaiting, notify |}
+
+-- 顶层系统：当你用“Use CSP to Guide B”时，ProB 会在 Ops 上与 B 同步
+MAIN = LIBRARIAN ||| USERS
+
+-- ============== 可执行 Trace 测试（仿老师示例） ==============
+
+-- 一条期望的系统交互：上新 b1、补 1，本 m1 注册、借、还
+PROB_TEST_TRACE =
+  addTitle.b1 ->
+  incInventory.b1.1 ->
+  registerMember.m1 ->
+  borrow.m1.b1 ->
+  return.m1.b1 ->
+  STOP
+
+-- 另一条小测试：先注册后借（用于 [T= 比较）
+-- 这里只做一个很短的前缀以演示
+TestShort = registerMember.m2 -> STOP
+
+-- 断言（与课程示例一致）
+assert MAIN :[ deadlock free [FD] ]
+assert MAIN :[ livelock free ]
+assert MAIN [T= PROB_TEST_TRACE
+assert MAIN [T= TestShort
