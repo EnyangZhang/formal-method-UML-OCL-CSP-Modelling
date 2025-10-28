@@ -1,62 +1,120 @@
--- =========================================
--- Library System — CSP (A2 style, ProB-ready)
--- 参考课堂示例：分进程 + 并行同步 + Trace 测试
--- =========================================
+-- Channels
+channel borrow, getBook        
+channel returnBook, leaveBook
+channel reserve, visitLibrary  
+channel notMember, memberRegister, approved
+channel overLimit 
+channel hasCopy, noCopy 
+channel addWaiting, stopWaiting
+channel addBook, deleteBook
+channel bookAdded, bookDeleted
 
--- 用枚举，便于在 Trace 里写常量（比 Int 直观）
-datatype MEM = m1 | m2 | m3
-datatype TIT = b1 | b2
+BORROW = 
+     (borrow -> getBook -> MEMBERACTION) [] OVERLIMIT
 
--- 事件与 B 操作同名，便于同步
-channel registerMember : MEM
-channel addTitle       : TIT
-channel incInventory   : TIT.Int
-channel borrow         : MEM.TIT
-channel return         : MEM.TIT
-channel addWaiting     : MEM.TIT
-channel removeWaiting  : MEM.TIT
-channel notify         : MEM.TIT
+RESERVE =
+     (reserve -> visitLibrary -> getBook -> MEMBERACTION) [] OVERLIMIT
 
--- 馆员：负责上新/补货
-LIBRARIAN =
-      addTitle?t      -> LIBRARIAN
-   [] incInventory?t?n -> LIBRARIAN
+RETURN =
+     returnBook -> visitLibrary -> leaveBook -> MEMBERACTION 
 
--- 会员行为：借不到就排队；被通知后再借；借到后归还
-USER(m, t) =
-      borrow!m!t -> return!m!t -> USER(m, t)
-   [] addWaiting!m!t ->
-        (  notify?m?t      -> borrow!m!t -> return!m!t -> USER(m, t)
-        [] removeWaiting!m!t -> USER(m, t)
-        )
+WAITING =
+     (noCopy -> WAITING) [] (hasCopy -> BORROW) [] (stopWaiting -> MEMBERACTION)
 
--- 多会员并发（例：都盯 b1；需要多书目时可把 t 外部选择化）
-USERS = ||| x:{m1,m2} @ USER(x, b1)
+ADDWAITING =
+      noCopy  -> addWaiting -> WAITING
+   [] hasCopy -> BORROW
 
--- 与 B 同步的操作集合（只为并行书写清晰；不是显式 α）
-Ops = {| registerMember, addTitle, incInventory,
-         borrow, return, addWaiting, removeWaiting, notify |}
+OVERLIMIT = (overLimit -> MEMBERACTION)
 
--- 顶层系统：当你用“Use CSP to Guide B”时，ProB 会在 Ops 上与 B 同步
-MAIN = LIBRARIAN ||| USERS
+NOTMEMBER   = notMember -> memberRegister -> approved -> MEMBERACTION
 
--- ============== 可执行 Trace 测试（仿老师示例） ==============
+ADMINAPPROVEREG = memberRegister -> approved -> ADMINACTION
 
--- 一条期望的系统交互：上新 b1、补 1，本 m1 注册、借、还
-PROB_TEST_TRACE =
-  addTitle.b1 ->
-  incInventory.b1.1 ->
-  registerMember.m1 ->
-  borrow.m1.b1 ->
-  return.m1.b1 ->
-  STOP
+ADDBOOK = addBook -> bookAdded -> ADMINACTION
 
--- 另一条小测试：先注册后借（用于 [T= 比较）
--- 这里只做一个很短的前缀以演示
-TestShort = registerMember.m2 -> STOP
+DELETEBOOK = deleteBook -> bookDeleted -> ADMINACTION
 
--- 断言（与课程示例一致）
-assert MAIN :[ deadlock free [FD] ]
-assert MAIN :[ livelock free ]
-assert MAIN [T= PROB_TEST_TRACE
-assert MAIN [T= TestShort
+MEMBERACTION = (BORROW  [] RESERVE  [] RETURN [] ADDWAITING)
+
+ADMINACTION = ADDBOOK [] DELETEBOOK 
+
+USERMAIN = MEMBERACTION [] NOTMEMBER
+
+MAIN = USERMAIN [| {| memberRegister, approved|} |] ADMINAPPROVEREG ||| ADMINACTION
+
+
+-- =============================
+-- Trace tests
+-- =============================
+
+-- 1) Borrow
+TRACE_BORROW_OK = borrow -> getBook -> STOP
+assert MAIN [T= TRACE_BORROW_OK
+
+-- 2) Reserve and retrive
+TRACE_RESERVE_OK = reserve -> visitLibrary -> getBook -> STOP
+assert MAIN [T= TRACE_RESERVE_OK
+
+-- 3) Return 
+TRACE_RETURN = returnBook -> visitLibrary -> leaveBook -> STOP
+assert MAIN [T= TRACE_RETURN
+
+-- 4) Waiting list
+TRACE_ADDWAITING = noCopy -> addWaiting -> STOP
+assert MAIN [T= TRACE_ADDWAITING
+
+-- 5) Waiting and borrow
+TRACE_WAITING_TO_BORROW =
+    noCopy -> addWaiting -> hasCopy -> borrow -> getBook -> STOP
+assert MAIN [T= TRACE_WAITING_TO_BORROW
+
+-- 6) Cancel waiting
+TRACE_STOP_WAITING =
+    noCopy -> addWaiting -> stopWaiting -> STOP
+assert MAIN [T= TRACE_STOP_WAITING
+
+-- 7) Overlimit borrow book
+TRACE_OVERLIMIT_ONLY = overLimit -> STOP
+assert MAIN [T= TRACE_OVERLIMIT_ONLY
+
+-- 8) Membership register approval
+TRACE_REGISTER_THEN_BORROW =
+    notMember -> memberRegister -> approved -> borrow -> getBook -> STOP
+assert MAIN [T= TRACE_REGISTER_THEN_BORROW
+
+-- 9) Add books
+TRACE_ADMIN_ADD = addBook -> bookAdded -> STOP
+assert MAIN [T= TRACE_ADMIN_ADD
+
+-- 10) Delete books
+TRACE_ADMIN_DELETE = deleteBook -> bookDeleted -> STOP
+assert MAIN [T= TRACE_ADMIN_DELETE
+
+-- 11) Asynchronisation of admin and member
+TRACE_INTERLEAVE_ADMIN_USER =
+    addBook -> bookAdded -> borrow -> getBook -> STOP
+assert MAIN [T= TRACE_INTERLEAVE_ADMIN_USER
+
+-- 12) Reserve
+TRACE_RESERVE_DIRECT =
+    reserve -> visitLibrary -> getBook -> STOP
+assert MAIN [T= TRACE_RESERVE_DIRECT
+
+-- 13) Waiting longer and stop waiting
+TRACE_WAITING_LOOP = noCopy -> addWaiting -> noCopy -> noCopy -> STOP
+assert MAIN [T= TRACE_WAITING_LOOP
+
+TRACE_WAITING_LOOP_WITH_EXIT =
+    noCopy -> addWaiting -> noCopy -> noCopy -> stopWaiting -> STOP
+assert MAIN [T= TRACE_WAITING_LOOP_WITH_EXIT
+
+-- 14) Return and borrow
+TRACE_RETURN_THEN_BORROW =
+    returnBook -> visitLibrary -> leaveBook -> borrow -> STOP
+assert MAIN [T= TRACE_RETURN_THEN_BORROW
+
+-- 15) Synchronization of approval process of membership
+TRACE_APPROVAL_HANDSHAKE = notMember -> memberRegister -> approved -> STOP
+assert MAIN [T= TRACE_APPROVAL_HANDSHAKE
+
